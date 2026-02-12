@@ -317,6 +317,7 @@ const Writer = struct {
 const Command = struct {
     format: Writer.Format,
     filters: [][]const u8,
+    url: []const u8,
 };
 
 fn parseArgs(arena: Allocator) !Command {
@@ -328,6 +329,7 @@ fn parseArgs(arena: Allocator) !Command {
         \\  --json           result is formatted in JSON.
         \\  --summary        print a summary result. Incompatible w/ --json or --quiet
         \\  --quiet          No output. Incompatible w/ --json or --summary
+        \\  --url            wpt webserver address, default http://web-platform.test:8000/
         \\
     ;
 
@@ -338,6 +340,7 @@ fn parseArgs(arena: Allocator) !Command {
 
     var format = Writer.Format.text;
     var filters: std.ArrayList([]const u8) = .{};
+    var url: []const u8 = "http://web-platform.test:8000/";
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, "-h", arg) or std.mem.eql(u8, "--help", arg)) {
@@ -349,8 +352,8 @@ fn parseArgs(arena: Allocator) !Command {
             format = .json;
         } else if (std.mem.eql(u8, "--summary", arg)) {
             format = .summary;
-        } else if (std.mem.eql(u8, "--quiet", arg)) {
-            format = .quiet;
+        } else if (std.mem.eql(u8, "--url", arg)) {
+            url = args.next() orelse return error.UrlIsMissing;
         } else {
             try filters.append(arena, arg);
         }
@@ -359,6 +362,7 @@ fn parseArgs(arena: Allocator) !Command {
     return .{
         .format = format,
         .filters = filters.items,
+        .url = url,
     };
 }
 
