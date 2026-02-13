@@ -22,6 +22,7 @@ const Allocator = std.mem.Allocator;
 
 const log = @import("log.zig");
 const Config = @import("Config.zig");
+const Browser = @import("browser/Browser.zig");
 const Snapshot = @import("browser/js/Snapshot.zig");
 const Platform = @import("browser/js/Platform.zig");
 const Telemetry = @import("telemetry/telemetry.zig").Telemetry;
@@ -33,6 +34,7 @@ pub const ArenaPool = @import("ArenaPool.zig");
 const App = @This();
 
 http: Http,
+browser: Browser,
 config: *const Config,
 platform: Platform,
 snapshot: Snapshot,
@@ -69,6 +71,9 @@ pub fn init(allocator: Allocator, config: *const Config) !*App {
     app.arena_pool = ArenaPool.init(allocator);
     errdefer app.arena_pool.deinit();
 
+    app.browser = try Browser.init(app, .{
+        .env = .{ .with_inspector = true },
+    });
     return app;
 }
 
@@ -83,6 +88,7 @@ pub fn deinit(self: *App) void {
         self.app_dir_path = null;
     }
     self.telemetry.deinit();
+    self.browser.deinit();
     self.robots.deinit();
     self.http.deinit();
     self.snapshot.deinit();

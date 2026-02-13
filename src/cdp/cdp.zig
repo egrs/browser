@@ -57,7 +57,7 @@ pub fn CDPT(comptime TypeProvider: type) type {
         allocator: Allocator,
 
         // The active browser
-        browser: Browser,
+        browser: *Browser,
 
         // when true, any target creation must be attached.
         target_auto_attach: bool = false,
@@ -87,14 +87,15 @@ pub fn CDPT(comptime TypeProvider: type) type {
 
         pub fn init(app: *App, client: TypeProvider.Client) !Self {
             const allocator = app.allocator;
-            const browser = try Browser.init(app, .{
-                .env = .{ .with_inspector = true },
-            });
-            errdefer browser.deinit();
+
+            _ = app.browser.call_arena.reset(.{.retain_with_limit = 8 * 1024});
+            _ = app.browser.page_arena.reset(.{.retain_with_limit = 8 * 1024});
+            _ = app.browser.session_arena.reset(.{.retain_with_limit = 8 * 1024});
+            _ = app.browser.transfer_arena.reset(.{.retain_with_limit = 8 * 1024});
 
             return .{
                 .client = client,
-                .browser = browser,
+                .browser = &app.browser,
                 .allocator = allocator,
                 .browser_context = null,
                 .page_arena = std.heap.ArenaAllocator.init(allocator),
@@ -108,7 +109,6 @@ pub fn CDPT(comptime TypeProvider: type) type {
             if (self.browser_context) |*bc| {
                 bc.deinit();
             }
-            self.browser.deinit();
             self.page_arena.deinit();
             self.message_arena.deinit();
             self.notification_arena.deinit();
@@ -402,7 +402,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
 
             const session = try cdp.browser.newSession(notification);
 
-            const browser = &cdp.browser;
+            const browser = cdp.browser;
             const inspector_session = browser.env.inspector.?.startSession(self);
             errdefer browser.env.inspector.?.stopSession();
 
@@ -444,7 +444,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             // safe to call even if never registered
             log.unregisterInterceptor();
             self.log_interceptor.deinit();
-            const browser = &self.cdp.browser;
+            const browser = self.cdp.browser;
 
             // Drain microtasks makes sure we don't have inspector's callback
             // in progress before deinit.
@@ -494,7 +494,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         }
 
         pub fn createIsolatedWorld(self: *Self, world_name: []const u8, grant_universal_access: bool) !*IsolatedWorld {
-            const browser = &self.cdp.browser;
+            const browser = self.cdp.browser;
             const arena = try browser.arena_pool.acquire();
             errdefer browser.arena_pool.release(arena);
 
