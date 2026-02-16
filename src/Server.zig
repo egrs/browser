@@ -46,7 +46,7 @@ active_threads: std.atomic.Value(u32) = .init(0),
 next_client_id: std.atomic.Value(u64) = .init(1),
 clients: std.ArrayList(*Client) = .{},
 client_mutex: std.Thread.Mutex = .{},
-clients_pool: std.heap.MemoryPool(Client),
+free_clients: std.ArrayList(*Client) = .{},
 
 pub fn init(allocator: Allocator, app: *App, address: net.Address) !Server {
     const json_version_response = try buildJSONVersionResponse(allocator, address);
@@ -57,7 +57,6 @@ pub fn init(allocator: Allocator, app: *App, address: net.Address) !Server {
         .listener = null,
         .allocator = allocator,
         .json_version_response = json_version_response,
-        .clients_pool = std.heap.MemoryPool(Client).init(allocator),
     };
 }
 
@@ -102,7 +101,13 @@ pub fn deinit(self: *Server) void {
         self.listener = null;
     }
     self.clients.deinit(self.allocator);
-    self.clients_pool.deinit();
+    for (self.free_clients.items) |client| {
+        if (client.http) |http| {
+            http.deinit();
+        }
+        self.allocator.destroy(client);
+    }
+    self.free_clients.deinit(self.allocator);
     self.allocator.free(self.json_version_response);
 }
 
@@ -159,6 +164,9 @@ fn handleConnection(self: *Server, socket: posix.socket_t, timeout_ms: u32) void
 
     const client_id = self.next_client_id.fetchAdd(1, .monotonic);
 
+    // Preserve the pooled HttpClient across reinit.
+    const http = client.http;
+
     client.* = Client.init(
         client_id,
         socket,
@@ -167,9 +175,11 @@ fn handleConnection(self: *Server, socket: posix.socket_t, timeout_ms: u32) void
         self.json_version_response,
         timeout_ms,
     ) catch |err| {
+        client.http = http;
         log.err(.app, "CDP client init", .{ .err = err });
         return;
     };
+    client.http = http;
     defer client.deinit();
 
     self.registerClient(client);
@@ -188,13 +198,23 @@ fn handleConnection(self: *Server, socket: posix.socket_t, timeout_ms: u32) void
 fn getClient(self: *Server) !*Client {
     self.client_mutex.lock();
     defer self.client_mutex.unlock();
-    return self.clients_pool.create();
+    if (self.free_clients.pop()) |client| {
+        return client;
+    }
+    const client = try self.allocator.create(Client);
+    client.http = null;
+    return client;
 }
 
 fn releaseClient(self: *Server, client: *Client) void {
     self.client_mutex.lock();
     defer self.client_mutex.unlock();
-    self.clients_pool.destroy(client);
+    self.free_clients.append(self.allocator, client) catch {
+        if (client.http) |http| {
+            http.deinit();
+        }
+        self.allocator.destroy(client);
+    };
 }
 
 fn registerClient(self: *Server, client: *Client) void {
@@ -268,7 +288,7 @@ pub const Client = struct {
     id: u64,
     allocator: Allocator,
     app: *App,
-    http: *HttpClient,
+    http: ?*HttpClient,
     json_version_response: []const u8,
     reader: Reader(true),
     socket: posix.socket_t,
@@ -308,15 +328,12 @@ pub const Client = struct {
         var reader = try Reader(true).init(allocator);
         errdefer reader.deinit();
 
-        const http = try app.http.createClient(allocator);
-        errdefer http.deinit();
-
         return .{
             .id = id,
             .socket = socket,
             .allocator = allocator,
             .app = app,
-            .http = http,
+            .http = null,
             .json_version_response = json_version_response,
             .reader = reader,
             .mode = .{ .http = {} },
@@ -337,33 +354,33 @@ pub const Client = struct {
         }
         self.reader.deinit();
         self.send_arena.deinit();
-        self.http.deinit();
+        if (self.http) |http| {
+            http.reset();
+        }
     }
 
     fn start(self: *Client) void {
-        const http = self.http;
-        http.cdp_client = .{
-            .socket = self.socket,
-            .ctx = self,
-            .blocking_read_start = Client.blockingReadStart,
-            .blocking_read = Client.blockingRead,
-            .blocking_read_end = Client.blockingReadStop,
-        };
-        defer http.cdp_client = null;
-
-        self.httpLoop(http) catch |err| {
+        self.httpLoop() catch |err| {
             log.err(.app, "CDP client loop", .{ .err = err });
         };
     }
 
-    fn httpLoop(self: *Client, http: *HttpClient) !void {
+    fn httpLoop(self: *Client) !void {
         lp.assert(self.mode == .http, "Client.httpLoop invalid mode", .{});
         while (true) {
-            const status = http.tick(self.timeout_ms) catch |err| {
-                log.err(.app, "http tick", .{ .err = err });
+            var fds = [_]posix.pollfd{.{
+                .fd = self.socket,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            }};
+            const ready = posix.poll(fds[0..], @intCast(self.timeout_ms)) catch |err| {
+                if (err == error.Interrupted) {
+                    continue;
+                }
+                log.err(.app, "CDP poll", .{ .err = err });
                 return;
             };
-            if (status != .cdp_socket) {
+            if (ready == 0) {
                 log.info(.app, "CDP timeout", .{});
                 return;
             }
@@ -377,10 +394,20 @@ pub const Client = struct {
             }
         }
 
-        return self.cdpLoop(http);
+        return self.cdpLoop();
     }
 
-    fn cdpLoop(self: *Client, http: *HttpClient) !void {
+    fn cdpLoop(self: *Client) !void {
+        const http = try self.ensureHttp();
+        http.cdp_client = .{
+            .socket = self.socket,
+            .ctx = self,
+            .blocking_read_start = Client.blockingReadStart,
+            .blocking_read = Client.blockingRead,
+            .blocking_read_end = Client.blockingReadStop,
+        };
+        defer http.cdp_client = null;
+
         var cdp = &self.mode.cdp;
         var last_message = timestamp(.monotonic);
         var ms_remaining = self.timeout_ms;
@@ -633,8 +660,16 @@ pub const Client = struct {
             break :blk res;
         };
 
-        self.mode = .{ .cdp = try CDP.init(self.app, self.http, self) };
+        const http = try self.ensureHttp();
+        self.mode = .{ .cdp = try CDP.init(self.app, http, self) };
         return self.send(response);
+    }
+
+    fn ensureHttp(self: *Client) !*HttpClient {
+        if (self.http) |http| return http;
+        const http = try self.app.http.createClient(self.allocator);
+        self.http = http;
+        return http;
     }
 
     fn writeHTTPErrorResponse(self: *Client, comptime status: u16, comptime body: []const u8) void {

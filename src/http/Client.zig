@@ -186,6 +186,21 @@ pub fn deinit(self: *Client) void {
     self.allocator.destroy(self);
 }
 
+/// Resets per-session state for reuse from a pool. Preserves expensive
+/// resources (curl multi handle, easy handles, transfer pool memory).
+pub fn reset(self: *Client) void {
+    // abort() kills all active/queued transfers; their shutdown callbacks
+    // also drain pending_robots_queue via fetchRemove.
+    self.abort();
+
+    self.cdp_client = null;
+    self.intercepted = 0;
+    self.next_request_id = 0;
+
+    // Restore original proxy settings on all easy handles.
+    self.restoreOriginalProxy() catch {};
+}
+
 pub fn newHeaders(self: *const Client) !Http.Headers {
     return Http.Headers.init(self.config.http_headers.user_agent_header);
 }
