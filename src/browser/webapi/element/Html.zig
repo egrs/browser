@@ -342,13 +342,13 @@ pub fn click(self: *HtmlElement, page: *Page) !void {
     try page._event_manager.dispatch(self.asEventTarget(), event);
 }
 
-fn getAttributeFunction(
+pub fn getAttributeFunction(
     self: *HtmlElement,
     listener_type: GlobalEventHandler,
     page: *Page,
 ) !?js.Function.Global {
     const element = self.asElement();
-    if (page.getAttrListener(element, listener_type)) |cached| {
+    if (page._element_attr_listeners.get(.{ .target = element.asEventTarget(), .handler = listener_type })) |cached| {
         return cached;
     }
 

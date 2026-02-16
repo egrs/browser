@@ -103,7 +103,7 @@ pub fn createPage(self: *Session) !*Page {
 
     self.page = @as(Page, undefined);
     const page = &self.page.?;
-    try Page.init(page, self);
+    try Page.init(page, self, null);
 
     // Creates a new NavigationEventTarget for this page.
     try self.navigation.onNewPage(page);
@@ -144,7 +144,7 @@ pub fn replacePage(self: *Session) !*Page {
 
     self.page = @as(Page, undefined);
     const page = &self.page.?;
-    try Page.init(page, self);
+    try Page.init(page, self, null);
     return page;
 }
 
