@@ -36,6 +36,7 @@ pub const pageTest = base.pageTest;
 pub const newString = base.newString;
 
 const Client = struct {
+    id: u64 = 0,
     allocator: Allocator,
     send_arena: ArenaAllocator,
     sent: std.ArrayList(json.Value) = .{},
@@ -85,7 +86,7 @@ const TestContext = struct {
             self.client = Client.init(self.arena.allocator());
             // Don't use the arena here. We want to detect leaks in CDP.
             // The arena is only for test-specific stuff
-            self.cdp_ = TestCDP.init(base.test_app, &self.client.?) catch unreachable;
+            self.cdp_ = TestCDP.init(base.test_app, base.test_http, &self.client.?) catch unreachable;
         }
         return &self.cdp_.?;
     }

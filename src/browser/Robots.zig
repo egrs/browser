@@ -58,12 +58,16 @@ pub const RobotStore = struct {
 
     allocator: std.mem.Allocator,
     map: RobotsMap,
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator) RobotStore {
         return .{ .allocator = allocator, .map = .empty };
     }
 
     pub fn deinit(self: *RobotStore) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         var iter = self.map.iterator();
 
         while (iter.next()) |entry| {
@@ -79,6 +83,9 @@ pub const RobotStore = struct {
     }
 
     pub fn get(self: *RobotStore, url: []const u8) ?RobotsEntry {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         return self.map.get(url);
     }
 
@@ -87,11 +94,17 @@ pub const RobotStore = struct {
     }
 
     pub fn put(self: *RobotStore, url: []const u8, robots: Robots) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const duped = try self.allocator.dupe(u8, url);
         try self.map.put(self.allocator, duped, .{ .present = robots });
     }
 
     pub fn putAbsent(self: *RobotStore, url: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const duped = try self.allocator.dupe(u8, url);
         try self.map.put(self.allocator, duped, .absent);
     }
